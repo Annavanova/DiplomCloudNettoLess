@@ -1,0 +1,43 @@
+server:
+  servlet:
+    context-path: /cloud
+  port: 8080
+
+file:
+  storage:
+    path: ${user.home}/cloud-storage
+
+jwt:
+  secret: "mysecretkeywithatleast32characterslength123" # Генерируется командой: openssl rand -base64 32
+  expiration: 86400000 # 24 часа в миллисекундах  # 24 часа в миллисекундах
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: postgres
+    password: 12345
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      connection-timeout: 30000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+logging:
+  level:
+    org.springframework: DEBUG
