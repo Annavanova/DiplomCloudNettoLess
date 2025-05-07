@@ -1,15 +1,14 @@
 package DiplomCloud.DiplomCloud.services;
 
 
-import DiplomCloud.DiplomCloud.dto.FileInfoResponse;
 import DiplomCloud.DiplomCloud.exception.FileStorageException;
 import DiplomCloud.DiplomCloud.exception.UserNotFoundException;
 import DiplomCloud.DiplomCloud.models.FileEntity;
 import DiplomCloud.DiplomCloud.models.User;
 import DiplomCloud.DiplomCloud.repositories.FileRepository;
 import DiplomCloud.DiplomCloud.repositories.UserRepository;
-import DiplomCloud.DiplomCloud.security.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
@@ -27,23 +26,23 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class FileStorageService {
     private final FileRepository fileRepository;
     private final UserRepository userRepository;
-    private final JwtTokenProvider jwtTokenProvider;
 
     @Value("${file.storage.path}")
     private String storagePath;
 
-    // Сеттер с доступом в пределах пакета (для тестов)
-    public void setStoragePath(String storagePath) {
-        this.storagePath = storagePath;
-    }
+    public void uploadFile(String username, String filename, MultipartFile file) {
+        log.info("Запрос на загрузку - Пользователь: {}, имя файла: {}, размер: {} bytes",
+                username, filename, file.getSize());
 
-    public void uploadFile(String authToken, String filename, MultipartFile file) {
-        String username = jwtTokenProvider.getUsername(authToken);
         User user = userRepository.findByLogin(username)
-                .orElseThrow(() -> new UserNotFoundException(username));
+                .orElseThrow(() -> {
+                    log.error("Пользователь не найден: {}", username);
+                    return new UserNotFoundException(username);
+                });
 
         Path userDir = Paths.get(storagePath, username);
         try {
@@ -58,53 +57,70 @@ public class FileStorageService {
             fileEntity.setOwner(user);
 
             fileRepository.save(fileEntity);
+            log.info("Файл успешно загружен - пользователь: {}, имя файла: {}", username, filename);
         } catch (IOException e) {
-            throw new FileStorageException("Не удалось сохранить фвйл " + filename, e);
+            log.error("Не удалось загрузить файл - пользователь: {}, имя файла: {}, ошибка: {}",
+                    username, filename, e.getMessage());
+            throw new FileStorageException("Не удалось сохранить файл " + filename, e);
         }
     }
 
-    public Resource downloadFile(String authToken, String filename) {
-        // 1. Получаем безопасный путь
-        Path rootLocation = Paths.get(storagePath).normalize();
-        Path filePath = rootLocation.resolve(filename).normalize();
+    public Resource downloadFile(String username, String filename) {
+        log.info("Запрос на загрузку - пользователь: {}, имя файла: {}", username, filename);
 
-        // 2. Проверка безопасности
+        Path rootLocation = Paths.get(storagePath).normalize();
+        Path filePath = rootLocation.resolve(username).resolve(filename).normalize();
+
         if (!filePath.startsWith(rootLocation)) {
+            log.error("Нарушение безопасности - попытка доступа за пределы каталога хранилища: {}", filePath);
             throw new SecurityException("Не удается получить доступ к файлу");
         }
 
-        // 3. Создаем Resource с обработкой ошибок
         try {
             Resource resource = new UrlResource(filePath.toUri());
-
             if (resource.exists() && resource.isReadable()) {
+                log.debug("Файл найден и доступен для чтения - путь: {}", filePath);
                 return resource;
             } else {
+                log.warn("Файл не найден или недоступен для чтения - путь: {}", filePath);
                 throw new FileNotFoundException("Файл не найден или недоступен для чтения: " + filename);
             }
         } catch (MalformedURLException | FileNotFoundException ex) {
+            log.error("Не удалось загрузить файл - путь: {}, ошибка: {}", filePath, ex.getMessage());
             throw new FileStorageException("Неверный путь к файлу: " + filePath, ex);
         }
     }
 
-    public void deleteFile(String authToken, String filename) {
-        String username = jwtTokenProvider.getUsername(authToken);
+    public void deleteFile(String username, String filename) {
+        log.info("Запрос на удаление - пользователь: {}, имя файла: {}", username, filename);
+
         User user = userRepository.findByLogin(username)
-                .orElseThrow(() -> new UserNotFoundException(username));
+                .orElseThrow(() -> {
+                    log.error("Пользователь не найден: {}", username);
+                    return new UserNotFoundException(username);
+                });
 
         Path filePath = Paths.get(storagePath, username, filename);
         try {
             Files.deleteIfExists(filePath);
             fileRepository.deleteByOwnerAndFilename(user, filename);
+            log.info("Файл успешно удален - пользователь: {}, имя файла: {}", username, filename);
         } catch (IOException e) {
+            log.error("Не удалось удалить файл - пользователь: {}, имя файла: {}, ошибка: {}",
+                    username, filename, e.getMessage());
             throw new FileStorageException("Не удалось удалить файл " + filename, e);
         }
     }
 
-    public void renameFile(String authToken, String filename, String newName) {
-        String username = jwtTokenProvider.getUsername(authToken);
+    public void renameFile(String username, String filename, String newName) {
+        log.info("Запрос на переименование - пользователь: {}, старое имя файла: {}, новое имя файла: {}",
+                username, filename, newName);
+
         User user = userRepository.findByLogin(username)
-                .orElseThrow(() -> new UserNotFoundException(username));
+                .orElseThrow(() -> {
+                    log.error("Пользователь не найден: {}", username);
+                    return new UserNotFoundException(username);
+                });
 
         Path source = Paths.get(storagePath, username, filename);
         Path target = Paths.get(storagePath, username, newName);
@@ -113,25 +129,37 @@ public class FileStorageService {
             Files.move(source, target);
 
             FileEntity fileEntity = fileRepository.findByOwnerAndFilename(user, filename)
-                    .orElseThrow(() -> new FileNotFoundException("Файл не найден: " + filename));
+                    .orElseThrow(() -> {
+                        log.error("Файл не найден в DB: {}", filename);
+                        return new FileNotFoundException("Файл не найден: " + filename);
+                    });
 
             fileEntity.setFilename(newName);
             fileEntity.setFilePath(target.toString());
             fileRepository.save(fileEntity);
+            log.info("Файл успешно переименован - пользователь: {}, старое имя файла: {}, новое имя файла: {}",
+                    username, filename, newName);
         } catch (IOException e) {
+            log.error("Не удалось переименовать файл - пользователь: {}, имя файла: {}, ошибка: {}",
+                    username, filename, e.getMessage());
             throw new FileStorageException("Не удалось переименовать файл " + filename, e);
         }
     }
 
-    public List<FileInfoResponse> listFiles(String authToken, int limit) {
-        String username = jwtTokenProvider.getUsername(authToken);
+    public List<FileEntity> listFiles(String username, int limit) {
+        log.info("Запрос списка файлов - пользователь: {}, limit: {}", username, limit);
+
         User user = userRepository.findByLogin(username)
-                .orElseThrow(() -> new UserNotFoundException(username));
+                .orElseThrow(() -> {
+                    log.error("Пользователь не найден: {}", username);
+                    return new UserNotFoundException(username);
+                });
 
-        return fileRepository.findByOwner(user).stream()
+        List<FileEntity> files = fileRepository.findByOwner(user).stream()
                 .limit(limit > 0 ? limit : Long.MAX_VALUE)
-                .map(file -> new FileInfoResponse(file.getFilename(), file.getSize()))
                 .collect(Collectors.toList());
-    }
 
+        log.debug("Найдено {} файло у пользователя: {}", files.size(), username);
+        return files;
+    }
 }
