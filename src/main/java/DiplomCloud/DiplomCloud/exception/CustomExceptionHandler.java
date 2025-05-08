@@ -44,4 +44,10 @@ public class CustomExceptionHandler {
         return ResponseEntity.internalServerError()
                 .body(new ErrorResponse(ex.getMessage(), 500));
     }
+
+    @ExceptionHandler(FileAlreadyExistsRuntimeException.class)
+    public ResponseEntity<ErrorResponse> handleFileExists(FileAlreadyExistsRuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponse(ex.getMessage(), 409));
+    }
 }

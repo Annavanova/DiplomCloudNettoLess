@@ -8,6 +8,9 @@ import java.util.List;
 import java.util.Optional;
 
 public interface FileRepository extends JpaRepository<FileEntity, Long> {
+    // Автоматически реализуется Spring Data JPA
+    boolean existsByIdAndFilename(Long id, String filename);
+
     List<FileEntity> findByOwner(User owner);
 
     Optional<FileEntity> findByOwnerAndFilename(User owner, String filename);
