@@ -1,6 +1,7 @@
 package DiplomCloud.DiplomCloud.services;
 
 
+import DiplomCloud.DiplomCloud.exception.FileNotFoundException;
 import DiplomCloud.DiplomCloud.exception.FileStorageException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,6 +42,21 @@ public class FileSystemStorageService {
         } catch (IOException e) {
             throw new FileStorageException("Сбой в работе файловой системы", e);
         }
+    }
+
+    public void renameFileInFS(String username, String sourceName, String targetName) throws IOException {
+        Path source = Paths.get(storagePath, username, sourceName);
+        Path target = Paths.get(storagePath, username, targetName);
+
+        if (!Files.exists(source)) {
+            throw new FileNotFoundException("Исходный файл не найден: " + sourceName);
+        }
+        if (Files.exists(target)) {
+            throw new FileAlreadyExistsException("Целевой файл существует: " + targetName);
+        }
+
+        Files.move(source, target);
+        log.debug("Успешное переименование файла в файловой системе: {} -> {}", sourceName, targetName);
     }
 
     public boolean checkFileExists(String username, String filename) {

@@ -18,7 +18,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.MalformedURLException;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -123,52 +122,36 @@ public class FileStorageService {
 
         // 1. Проверка существования целевого файла
         if (fileSystemStorageService.checkFileExists(username, newName)) {
-            throw new FileAlreadyExistsRuntimeException("Файл уже существует: " + newName);
+            throw new FileAlreadyExistsException("Файл уже существует: " + newName);
         }
 
         // 2. Получаем текущую запись
         FileEntity fileEntity = fileRepository.findByOwnerAndFilename(user, filename)
                 .orElseThrow(() -> new FileNotFoundRuntimeException("Файл не найден: " + filename));
 
-        // 3. Сохраняем состояние для возможного отката
+        // 3. Сохраняем оригинальные значения ТОЛЬКО для логов
         String originalName = fileEntity.getFilename();
         String originalPath = fileEntity.getFilePath();
 
+        // 5. Обновляем запись в БД (в рамках транзакции)
+        fileEntity.setFilename(newName);
+        fileEntity.setFilePath(Paths.get(storagePath, username, newName).toString());
+        fileRepository.save(fileEntity);
+        log.debug("Обновлена запись в базе данных: {} -> {}", originalName, newName);
+
         try {
-            // 4. Обновляем запись в БД
-            fileEntity.setFilename(newName);
-            fileEntity.setFilePath(Paths.get(storagePath, username, newName).toString());
-            fileRepository.save(fileEntity);
+            // 6. Выполняем операцию в файловой системе
+            fileSystemStorageService.renameFileInFS(username, filename, newName);
+            log.info("Файл успешно переименован в файловой системе");
 
-            // 5. Пробуем выполнить операцию в файловой системе
-            fileSystemStorageService.renameFileCompensable(username, filename, newName);
-
-            // 6. Проверка целостности после операции
+            // 7. Проверка целостности после операции
             if (!integrityCheckAfterRename(username, newName, fileEntity.getId())) {
-                throw new ConsistencyException("После переименования не удалось выполнить проверку целостности");
+                throw new ConsistencyException("Не удалось выполнить проверку целостности после переименования");
             }
-
-            log.info("Операция переименования успешно завершена");
         } catch (Exception e) {
-            log.error("Сбой операции переименования, инициирующий откат: {}", e.getMessage());
-
-            // Компенсирующая транзакция
-            try {
-                // Откатываем БД
-                fileEntity.setFilename(originalName);
-                fileEntity.setFilePath(originalPath);
-                fileRepository.save(fileEntity);
-
-                // Пробуем откатить ФС
-                if (fileSystemStorageService.checkFileExists(username, newName)) {
-                    fileSystemStorageService.rollbackRename(username, originalName, newName);
-                }
-            } catch (Exception rollbackEx) {
-                log.error("Откат не удался: {}", rollbackEx.getMessage());
-                throw new CriticalOperationException("Ошибка переименования и неудачный откат", rollbackEx);
-            }
-
-            throw new FileStorageException("Не удалось выполнить операцию переименования", e);
+            log.error("Сбой в работе файловой системы приведет к автоматическому откату транзакции");
+            // Spring автоматически откатит транзакцию БД из-за @Transactional
+            throw new FileStorageException("Не удалось выполнить операцию переименования файла", e);
         }
     }
 
@@ -185,11 +168,18 @@ public class FileStorageService {
         }
 
         // Дополнительные проверки, если нужно
-        FileEntity entity = fileRepository.findById(fileId).orElseThrow();
-        Path expectedPath = Paths.get(storagePath, username, filename);
+        FileEntity entity = fileRepository.findById(fileId).orElse(null);
+        if (entity != null) {
+            Path expectedPath = Paths.get(storagePath, username, filename);
+            if (!expectedPath.toString().equals(entity.getFilePath())) {
+                log.error("Несоответствие пути - ожидаемый: {}, фактический: {}",
+                        expectedPath, entity.getFilePath());
+                return false;
+            }
+        }
 
-        return expectedPath.toString().equals(entity.getFilePath());
-    }
+        return true;
+     }
 
     public List<FileEntity> listFiles(String username, int limit) {
         log.info("Запрос списка файлов - пользователь: {}, limit: {}", username, limit);
